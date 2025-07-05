@@ -2,8 +2,9 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator } from 'react-native';
 import { useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import axios from 'axios';
-import { OPENAI_API_KEY } from '@env';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GEMINI_API_KEY } from '@env';
+import { Buffer } from 'buffer';
 
 export default function App() {
   const [images, setImages] = useState([]);
@@ -57,70 +58,112 @@ export default function App() {
     setCarDetails(newCarDetails);
   };
 
-  // Analyze car details using AI vision
-  const analyzeCarImage = async (imageUri) => {
+  // Analyze car details using Gemini AI vision
+  const analyzeCarImage = async (imageUri, retryCount = 0) => {
     try {
       setIsAnalyzing(true);
       
+      // Debug: Check if API key is loaded
+      console.log('Gemini API Key loaded:', GEMINI_API_KEY ? 'Yes' : 'No');
+      console.log('API Key length:', GEMINI_API_KEY?.length);
+      console.log('API Key starts with:', GEMINI_API_KEY?.substring(0, 15) + '...');
+      
+      if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
+        Alert.alert('API Key Missing', 'Gemini API key not found. Please check your .env file and restart the app.');
+        throw new Error('Gemini API key not found. Please check your .env file.');
+      }
+      
+      // Initialize Gemini AI
+      const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+
       // Convert image to base64
       const response = await fetch(imageUri);
-      const blob = await response.blob();
-      const base64 = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result.split(',')[1]);
-        reader.readAsDataURL(blob);
-      });
+      const arrayBuffer = await response.arrayBuffer();
+      const base64String = Buffer.from(arrayBuffer).toString('base64');
 
-      // Call OpenAI Vision API
-      const apiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
-        model: "gpt-4-vision-preview",
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Analyze this car image and provide detailed information in JSON format. Include: brand, model, year (or year range), body_type, color, and any other notable features you can identify. If it's an interior shot, identify interior features, materials, etc. Be as specific as possible."
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:image/jpeg;base64,${base64}`
-                }
-              }
-            ]
-          }
-        ],
-        max_tokens: 500
-      }, {
-        headers: {
-          'Authorization': `Bearer ${OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
+      // Prepare the prompt
+      const prompt = `Analyze this car image and provide detailed information in valid JSON format only. Return a JSON object with these exact fields: brand, model, year, body_type, color, confidence_level (high/medium/low), and additional_features. If it's an interior shot, include interior-specific details in additional_features. Be as specific as possible with make, model, and year. Example format: {"brand": "Toyota", "model": "Camry", "year": "2018-2020", "body_type": "Sedan", "color": "Silver", "confidence_level": "high", "additional_features": "Leather interior, sunroof visible"}`;
+
+      // Create image part for Gemini
+      const imagePart = {
+        inlineData: {
+          data: base64String,
+          mimeType: "image/jpeg"
         }
-      });
+      };
 
-      const analysis = apiResponse.data.choices[0].message.content;
+      // Generate content
+      const result = await model.generateContent([prompt, imagePart]);
+      const analysis = result.response.text();
+      
+      console.log('Gemini response:', analysis);
       
       try {
-        // Try to parse as JSON
-        const carInfo = JSON.parse(analysis);
-        return carInfo;
-      } catch {
-        // If not JSON, return as text analysis
-        return { analysis: analysis };
+        // Clean the response to extract JSON (Gemini sometimes includes extra text)
+        let jsonMatch = analysis.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const carInfo = JSON.parse(jsonMatch[0]);
+          return carInfo;
+        } else {
+          // If no JSON found, try parsing the whole response
+          const carInfo = JSON.parse(analysis);
+          return carInfo;
+        }
+      } catch (parseError) {
+        console.log('Failed to parse as JSON, returning as text analysis');
+        // If not JSON, return a structured object with the text analysis
+        return { 
+          brand: "Analysis Complete",
+          model: "Check details below",
+          year: "See full analysis",
+          body_type: "Text format", 
+          color: "N/A",
+          analysis: analysis 
+        };
       }
     } catch (error) {
       console.error('Error analyzing car:', error);
-      // Return a mock analysis for demo purposes
-      return {
-        brand: "Analysis unavailable",
-        model: "Please add API key",
-        year: "Demo mode",
-        body_type: "Various",
-        color: "Multiple",
-        confidence: "Low",
-        note: "Add your OpenAI API key to enable real analysis"
-      };
+      console.error('Error details:', error.message);
+      
+      // Provide specific error messages based on the error type
+      if (error.message.includes('API_KEY_INVALID') || error.message.includes('invalid API key')) {
+        return {
+          brand: "Authentication Error",
+          model: "Invalid API Key",
+          year: "Please check your Gemini API key",
+          body_type: "Error",
+          color: "N/A",
+          note: "The API key may be invalid or expired. Please check your .env file."
+        };
+      } else if (error.message.includes('RATE_LIMIT') || error.message.includes('quota')) {
+        return {
+          brand: "Rate Limit",
+          model: "Too Many Requests",
+          year: "Please wait and try again",
+          body_type: "Error",
+          color: "N/A",
+          note: "You've reached the API rate limit. Please wait a moment and try again."
+        };
+      } else if (error.message.includes('Network') || error.message.includes('network')) {
+        return {
+          brand: "Network Error",
+          model: "No Internet Connection",
+          year: "Please check your connection",
+          body_type: "Error",
+          color: "N/A",
+          note: "Please check your internet connection and try again."
+        };
+      } else {
+        return {
+          brand: "Analysis Error",
+          model: "Unable to analyze",
+          year: "Please try again",
+          body_type: "Error", 
+          color: "N/A",
+          note: `Error: ${error.message}. Check the console for more details.`
+        };
+      }
     } finally {
       setIsAnalyzing(false);
     }
@@ -132,16 +175,94 @@ export default function App() {
       return;
     }
 
+    // Warn about rate limits for multiple images
+    if (images.length > 1) {
+      Alert.alert(
+        'Multiple Images Detected',
+        `You're about to analyze ${images.length} images. This will take a moment as we analyze each image individually. Consider using the single image analysis (🔍 button) for faster results.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Continue', onPress: () => performBatchAnalysis() }
+        ]
+      );
+    } else {
+      performBatchAnalysis();
+    }
+  };
+
+  const performBatchAnalysis = async () => {
     setIsAnalyzing(true);
     const analyses = [];
     
+    // Add smaller delay between requests for Gemini
     for (let i = 0; i < images.length; i++) {
-      const analysis = await analyzeCarImage(images[i].uri);
-      analyses.push(analysis);
+      try {
+        const analysis = await analyzeCarImage(images[i].uri);
+        analyses.push(analysis);
+        
+        // Add a shorter delay between requests
+        if (i < images.length - 1) {
+          console.log(`Waiting 3 seconds before analyzing next image...`);
+          await new Promise(resolve => setTimeout(resolve, 3000)); // 3 second delay
+        }
+      } catch (error) {
+        console.error(`Error analyzing image ${i + 1}:`, error);
+        analyses.push({
+          brand: "Analysis Failed",
+          model: "Error occurred",
+          year: "Skipped",
+          body_type: "Error",
+          color: "N/A",
+          note: `Failed to analyze image ${i + 1}`
+        });
+      }
     }
     
     setCarDetails(analyses);
     setIsAnalyzing(false);
+  };
+
+  const testAPIConnection = async () => {
+    try {
+      console.log('Testing Gemini API connection...');
+      console.log('Gemini API Key loaded:', GEMINI_API_KEY ? 'Yes' : 'No');
+      console.log('API Key length:', GEMINI_API_KEY?.length);
+      console.log('API Key starts with:', GEMINI_API_KEY?.substring(0, 15) + '...');
+      
+      if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
+        Alert.alert('API Key Missing', 'Please check your .env file');
+        return;
+      }
+
+      // Simple text-only API test with Gemini
+      const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+
+      const result = await model.generateContent("Just respond with 'Gemini API working' if you receive this message.");
+      const response = result.response.text();
+
+      console.log('Gemini API Test Response:', response);
+      Alert.alert('API Test Success', response || 'Gemini API is working!');
+      
+    } catch (error) {
+      console.error('Gemini API Test Error:', error);
+      console.error('Error message:', error.message);
+      Alert.alert('API Test Failed', `Error: ${error.message}`);
+    }
+  };
+
+  const analyzeSingleImage = async (index) => {
+    setIsAnalyzing(true);
+    try {
+      const analysis = await analyzeCarImage(images[index].uri);
+      const newCarDetails = [...carDetails];
+      newCarDetails[index] = analysis;
+      setCarDetails(newCarDetails);
+    } catch (error) {
+      console.error('Error analyzing single image:', error);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   return (
@@ -151,7 +272,7 @@ export default function App() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>🚗 Car Photo App</Text>
-        <Text style={styles.subtitle}>Capture and organize your car photos</Text>
+        <Text style={styles.subtitle}>Capture and analyze your car photos with Gemini AI</Text>
       </View>
 
       {/* Action Buttons */}
@@ -179,11 +300,18 @@ export default function App() {
                 <Text style={styles.analyzeButtonText}>Analyzing...</Text>
               </View>
             ) : (
-              <Text style={styles.analyzeButtonText}>🔍 Analyze Car Details</Text>
+              <Text style={styles.analyzeButtonText}>🔍 Analyze with Gemini AI</Text>
             )}
           </TouchableOpacity>
         </View>
       )}
+
+      {/* API Test Button */}
+      <View style={styles.analyzeContainer}>
+        <TouchableOpacity style={styles.testButton} onPress={testAPIConnection}>
+          <Text style={styles.testButtonText}>🧪 Test API Connection</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Image Count */}
       {images.length > 0 && (
@@ -200,6 +328,15 @@ export default function App() {
               onPress={() => removeImage(index)}
             >
               <Text style={styles.removeButtonText}>×</Text>
+            </TouchableOpacity>
+            
+            {/* Single Image Analyze Button */}
+            <TouchableOpacity 
+              style={styles.analyzeImageButton} 
+              onPress={() => analyzeSingleImage(index)}
+              disabled={isAnalyzing}
+            >
+              <Text style={styles.analyzeImageButtonText}>🔍</Text>
             </TouchableOpacity>
             
             {/* Car Details Overlay */}
@@ -236,6 +373,16 @@ export default function App() {
                 <Text style={styles.detailItem}>Year: {details.year || 'Unknown'}</Text>
                 <Text style={styles.detailItem}>Type: {details.body_type || 'Unknown'}</Text>
                 <Text style={styles.detailItem}>Color: {details.color || 'Unknown'}</Text>
+                {details.confidence_level && (
+                  <Text style={[styles.detailItem, styles.confidenceText]}>
+                    Confidence: {details.confidence_level}
+                  </Text>
+                )}
+                {details.additional_features && (
+                  <Text style={styles.detailFeatures}>
+                    Features: {details.additional_features}
+                  </Text>
+                )}
                 {details.note && (
                   <Text style={styles.detailNote}>{details.note}</Text>
                 )}
@@ -300,6 +447,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
   },
+  testButton: {
+    backgroundColor: '#6C757D',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  testButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   analyzeButtonDisabled: {
     backgroundColor: '#999',
   },
@@ -357,6 +516,21 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  analyzeImageButton: {
+    position: 'absolute',
+    top: 5,
+    left: 5,
+    backgroundColor: 'rgba(255, 107, 53, 0.8)',
+    borderRadius: 15,
+    width: 30,
+    height: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  analyzeImageButtonText: {
+    color: 'white',
+    fontSize: 14,
   },
   carDetailsOverlay: {
     position: 'absolute',
@@ -430,10 +604,21 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     color: '#333',
   },
+  confidenceText: {
+    color: '#28a745',
+    fontWeight: '600',
+  },
+  detailFeatures: {
+    fontSize: 11,
+    marginBottom: 4,
+    color: '#495057',
+    fontStyle: 'italic',
+  },
   detailNote: {
     fontSize: 10,
     fontStyle: 'italic',
-    color: '#666',
+    color: '#dc3545',
     marginTop: 8,
+    fontWeight: '500',
   },
 });

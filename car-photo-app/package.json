@@ -12,9 +12,10 @@
   "dependencies": {
     "@babel/preset-env": "^7.28.0",
     "@expo/metro-runtime": "~5.0.4",
+    "@google/generative-ai": "^0.24.1",
     "axios": "^1.10.0",
+    "buffer": "^6.0.3",
     "expo": "~53.0.16",
-    "expo-dev-client": "~5.2.3",
     "expo-image-picker": "~16.1.4",
     "expo-status-bar": "~2.2.3",
     "react": "19.0.0",
