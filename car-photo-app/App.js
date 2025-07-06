@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator, Modal } from 'react-native';
 import { useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -10,6 +10,7 @@ export default function App() {
   const [images, setImages] = useState([]);
   const [carDetails, setCarDetails] = useState([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
   const [activeTab, setActiveTab] = useState('home');
 
   const pickImage = async () => {
@@ -29,7 +30,7 @@ export default function App() {
 
     if (!result.canceled) {
       // Validate each selected image
-      setIsAnalyzing(true);
+      setIsValidating(true);
       const validImages = [];
       const invalidImages = [];
       
@@ -70,7 +71,7 @@ export default function App() {
         }
       }
       
-      setIsAnalyzing(false);
+      setIsValidating(false);
       
       // Show results to user
       if (invalidImages.length > 0 && validImages.length === 0) {
@@ -121,7 +122,7 @@ export default function App() {
 
     if (!result.canceled) {
       // Validate the captured photo
-      setIsAnalyzing(true);
+      setIsValidating(true);
       
       try {
         const asset = result.assets[0];
@@ -131,7 +132,7 @@ export default function App() {
         const validation = await validateCarImage(asset.uri);
         
         if (!validation.contains_vehicle) {
-          setIsAnalyzing(false);
+          setIsValidating(false);
           Alert.alert(
             'Not a Vehicle',
             `The captured image doesn't appear to contain a vehicle. ${validation.reason}\n\nPlease take a photo of a car, truck, or other motor vehicle.`,
@@ -145,7 +146,7 @@ export default function App() {
           const consistency = await checkCarConsistency(asset.uri);
           
           if (!consistency.matches_expected && consistency.confidence !== "low") {
-            setIsAnalyzing(false);
+            setIsValidating(false);
             Alert.alert(
               'Different Vehicle Detected',
               `This appears to be a different vehicle than your existing photos. ${consistency.reason}\n\nWould you like to start a new session with this vehicle?`,
@@ -177,7 +178,7 @@ export default function App() {
         // On validation error, allow the photo
         setImages([...images, result.assets[0]]);
       } finally {
-        setIsAnalyzing(false);
+        setIsValidating(false);
       }
     }
   };
@@ -343,8 +344,10 @@ Return ONLY a JSON object:
       const arrayBuffer = await response.arrayBuffer();
       const base64String = Buffer.from(arrayBuffer).toString('base64');
 
-      // Simplified and more reliable prompt for car analysis + damage detection
-      const prompt = `Analyze this car image and return ONLY a valid JSON object with car details and damage assessment.
+      // Enhanced prompt for car analysis + price prediction
+      const prompt = `Analyze this car image and return ONLY a valid JSON object with car details and value estimation.
+
+IMPORTANT: Always include BOTH pre-damage and post-damage value estimates.
 
 Required JSON format:
 {
@@ -355,13 +358,16 @@ Required JSON format:
   "color": "Primary color (e.g., Red, Blue, Silver)",
   "confidence_level": "high, medium, or low",
   "damage_detected": true or false,
-  "damage_types": ["list of damage types if any"],
   "damage_severity": "none, minor, moderate, or severe",
+  "estimated_value_undamaged": "Pre-damage market value if vehicle was in perfect condition (e.g., $20,000 - $22,000)",
+  "estimated_value_current": "Current market value considering actual condition and damage (e.g., $15,000 - $18,000)",
+  "value_factors": "Key factors affecting value (condition, rarity, model year, etc.)",
+  "damage_types": ["list of damage types if any"],
   "damage_description": "Brief description of any damage",
   "condition_assessment": "Overall condition summary"
 }
 
-Look for visible damage like scratches, dents, broken parts, collision damage, or rust. Return ONLY the JSON object, no other text.`;
+For luxury/exotic cars, provide realistic high-end valuations. For damaged vehicles, reduce the estimated value accordingly. Consider the vehicle's brand prestige, model rarity, condition, and market demand. Return ONLY the JSON object, no other text.`;
 
       // Create image part for Gemini
       const imagePart = {
@@ -673,7 +679,7 @@ Look for visible damage like scratches, dents, broken parts, collision damage, o
         {/* Detailed Car Analysis - moved inside the main ScrollView */}
         {carDetails.length > 0 && (
           <View style={styles.detailsSection}>
-            <Text style={styles.detailsTitle}>🚗 Car Analysis Results</Text>
+            <Text style={styles.detailsTitle}>🚗 Vehicle Analysis & Valuation</Text>
             {carDetails.map((details, index) => (
               <View key={index} style={styles.detailCard}>
                 <Text style={styles.detailCardTitle}>📸 Photo {index + 1} Analysis</Text>
@@ -688,44 +694,26 @@ Look for visible damage like scratches, dents, broken parts, collision damage, o
                   <Text style={styles.detailItem}>Color: {details.color || 'Unknown'}</Text>
                 </View>
                   
-                  {/* Damage Assessment */}
-                  {details.damage_detected !== undefined && (
-                    <View style={styles.damageSection}>
-                      <Text style={styles.damageTitle}>🔍 Damage Assessment</Text>
-                      <Text style={[styles.damageStatus, details.damage_detected ? styles.damageFound : styles.noDamage]}>
-                        {details.damage_detected ? '⚠️ Damage Detected' : '✅ No Damage Found'}
+                  {/* Price Prediction */}
+                  {(details.estimated_value_current || details.estimated_value) && (
+                    <View style={styles.priceSection}>
+                      <Text style={styles.priceTitle}>� Current Value</Text>
+                      <Text style={styles.estimatedPrice}>
+                        {details.estimated_value_current || details.estimated_value}
                       </Text>
                       
-                      {details.damage_severity && (
-                        <Text style={[styles.damageSeverity, getSeverityStyle(details.damage_severity)]}>
-                          Severity: {details.damage_severity.toUpperCase()}
+                      {details.damage_detected && (
+                        <Text style={styles.damageImpact}>
+                          {details.damage_severity === 'severe' ? '🔴 Significant damage detected - value reduced' :
+                           details.damage_severity === 'moderate' ? '🟡 Moderate damage detected - value affected' :
+                           details.damage_severity === 'minor' ? '🟢 Minor damage detected - slight impact' :
+                           '✅ No significant damage detected'}
                         </Text>
                       )}
                       
-                      {details.estimated_repair_cost && (
-                        <Text style={styles.repairCost}>
-                          Estimated Repair Cost: {details.estimated_repair_cost.toUpperCase()}
-                        </Text>
-                      )}
-                      
-                      {details.damage_types && details.damage_types.length > 0 && (
-                        <View style={styles.damageTypes}>
-                          <Text style={styles.damageTypesTitle}>Damage Types:</Text>
-                          {details.damage_types.map((type, idx) => (
-                            <Text key={idx} style={styles.damageType}>• {type.replace(/_/g, ' ')}</Text>
-                          ))}
-                        </View>
-                      )}
-                      
-                      {details.damage_description && (
-                        <Text style={styles.damageDescription}>
-                          Description: {details.damage_description}
-                        </Text>
-                      )}
-                      
-                      {details.condition_assessment && (
-                        <Text style={styles.conditionAssessment}>
-                          Overall Condition: {details.condition_assessment}
+                      {details.value_factors && (
+                        <Text style={styles.valueFactors}>
+                          Key factors: {details.value_factors}
                         </Text>
                       )}
                     </View>
@@ -756,15 +744,16 @@ Look for visible damage like scratches, dents, broken parts, collision damage, o
   const renderDamageContent = () => (
     <ScrollView style={styles.tabContent}>
       <View style={styles.tabHeader}>
-        <Text style={styles.tabTitle}>🔧 Damage & Replacements</Text>
-        <Text style={styles.tabSubtitle}>Damage assessment and part replacement guide</Text>
+        <Text style={styles.tabTitle}>🔧 Damage Reports & Analysis</Text>
+        <Text style={styles.tabSubtitle}>Detailed damage assessment and repair information</Text>
       </View>
       
       <View style={styles.tabCard}>
-        <Text style={styles.cardTitle}>📋 Damage Assessment</Text>
-        <Text style={styles.cardText}>• Upload photos to analyze vehicle damage</Text>
-        <Text style={styles.cardText}>• Get severity ratings and repair estimates</Text>
-        <Text style={styles.cardText}>• Identify damaged components</Text>
+        <Text style={styles.cardTitle}>📋 Comprehensive Damage Analysis</Text>
+        <Text style={styles.cardText}>• Detailed damage assessment with severity ratings</Text>
+        <Text style={styles.cardText}>• Professional repair cost estimates</Text>
+        <Text style={styles.cardText}>• Impact on vehicle value and resale potential</Text>
+        <Text style={styles.cardText}>• Component-level damage identification</Text>
       </View>
 
       <View style={styles.tabCard}>
@@ -775,20 +764,90 @@ Look for visible damage like scratches, dents, broken parts, collision damage, o
       </View>
 
       <View style={styles.tabCard}>
-        <Text style={styles.cardTitle}>📊 Recent Assessments</Text>
+        <Text style={styles.cardTitle}>📊 Detailed Damage Reports</Text>
         {carDetails.length > 0 ? (
           carDetails.map((details, index) => (
-            <View key={index} style={styles.assessmentItem}>
-              <Text style={styles.assessmentTitle}>
-                {details.brand} {details.model} ({details.year})
+            <View key={index} style={styles.damageReportCard}>
+              <Text style={styles.damageReportTitle}>
+                📸 {details.brand} {details.model} ({details.year}) - Photo {index + 1}
               </Text>
-              <Text style={[styles.assessmentStatus, details.damage_detected ? styles.damageFound : styles.noDamage]}>
-                {details.damage_detected ? '⚠️ Damage Found' : '✅ Good Condition'}
-              </Text>
+              
+              {/* Damage Assessment */}
+              {details.damage_detected !== undefined && (
+                <View style={styles.damageSection}>
+                  <Text style={styles.damageTitle}>🔍 Damage Assessment</Text>
+                  <Text style={[styles.damageStatus, details.damage_detected ? styles.damageFound : styles.noDamage]}>
+                    {details.damage_detected ? '⚠️ Damage Detected' : '✅ No Damage Found'}
+                  </Text>
+                  
+                  {details.damage_severity && (
+                    <Text style={[styles.damageSeverity, getSeverityStyle(details.damage_severity)]}>
+                      Severity: {details.damage_severity.toUpperCase()}
+                    </Text>
+                  )}
+                  
+                  {details.estimated_repair_cost && (
+                    <Text style={styles.repairCost}>
+                      Estimated Repair Cost: {details.estimated_repair_cost}
+                    </Text>
+                  )}
+                  
+                  {details.damage_types && details.damage_types.length > 0 && (
+                    <View style={styles.damageTypes}>
+                      <Text style={styles.damageTypesTitle}>Damage Types:</Text>
+                      {details.damage_types.map((type, idx) => (
+                        <Text key={idx} style={styles.damageType}>• {type.replace(/_/g, ' ')}</Text>
+                      ))}
+                    </View>
+                  )}
+                  
+                  {details.damage_description && (
+                    <Text style={styles.damageDescription}>
+                      Description: {details.damage_description}
+                    </Text>
+                  )}
+                  
+                  {details.condition_assessment && (
+                    <Text style={styles.conditionAssessment}>
+                      Overall Condition: {details.condition_assessment}
+                    </Text>
+                  )}
+                </View>
+              )}
+              
+              {/* Value Impact */}
+              {(details.estimated_value_current || details.estimated_value || details.estimated_value_undamaged) && (
+                <View style={styles.valueImpactSection}>
+                  <Text style={styles.valueImpactTitle}>💰 Value Analysis</Text>
+                  
+                  {/* Pre-damage value */}
+                  {details.estimated_value_undamaged && (
+                    <Text style={styles.undamagedValue}>
+                      Pre-damage Value: {details.estimated_value_undamaged}
+                    </Text>
+                  )}
+                  
+                  {/* Current value */}
+                  <Text style={styles.currentValue}>
+                    Current Value: {details.estimated_value_current || details.estimated_value}
+                  </Text>
+                  
+                  {/* Value difference calculation */}
+                  {details.estimated_value_undamaged && details.estimated_value_current && (
+                    <Text style={styles.valueDifference}>
+                      💥 Impact: Value affected by damage/condition
+                    </Text>
+                  )}
+                  
+                  {details.value_factors && (
+                    <Text style={styles.valueFactors}>Factors: {details.value_factors}</Text>
+                  )}
+                </View>
+              )}
             </View>
           ))
         ) : (
-          <Text style={styles.cardText}>No assessments yet. Start by uploading car photos in the Home tab.</Text>
+          <Text style={styles.cardText}>No damage reports available. Upload and analyze car photos in the Home tab first.</Text>
         )}
       </View>
     </ScrollView>
@@ -920,6 +979,23 @@ Look for visible damage like scratches, dents, broken parts, collision damage, o
           <Text style={[styles.navText, activeTab === 'profile' && styles.activeNavText]}>Profile</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Loading Modal for Validation */}
+      <Modal
+        transparent={true}
+        animationType="fade"
+        visible={isValidating}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <ActivityIndicator size="large" color="#007AFF" style={styles.loader} />
+            <Text style={styles.modalTitle}>Validating Photo</Text>
+            <Text style={styles.modalText}>
+              Checking if this image contains a vehicle...
+            </Text>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1213,6 +1289,86 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#2c3e50',
   },
+  // Price Prediction Styles
+  priceSection: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: '#e8f5e8',
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#28a745',
+  },
+  priceTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    color: '#2c3e50',
+  },
+  estimatedPrice: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#28a745',
+    marginBottom: 6,
+  },
+  undamagedValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#28a745',
+    marginBottom: 4,
+  },
+  valueDifference: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#e74c3c',
+    marginBottom: 6,
+    fontStyle: 'italic',
+  },
+  damageImpact: {
+    fontSize: 12,
+    marginBottom: 6,
+    fontStyle: 'italic',
+  },
+  valueFactors: {
+    fontSize: 11,
+    color: '#6c757d',
+    fontStyle: 'italic',
+  },
+  // Damage Report Styles (for damage tab)
+  damageReportCard: {
+    backgroundColor: '#f8f9fa',
+    padding: 15,
+    borderRadius: 10,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: '#dee2e6',
+  },
+  damageReportTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 12,
+    color: '#495057',
+    textAlign: 'center',
+  },
+  valueImpactSection: {
+    marginTop: 12,
+    padding: 10,
+    backgroundColor: '#fff3cd',
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#ffc107',
+  },
+  valueImpactTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 6,
+    color: '#856404',
+  },
+  currentValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#856404',
+    marginBottom: 4,
+  },
   // Bottom Navigation Styles
   bottomNav: {
     flexDirection: 'row',
@@ -1338,5 +1494,39 @@ const styles = StyleSheet.create({
   assessmentStatus: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 30,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
+    minWidth: 280,
+  },
+  loader: {
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  modalText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 22,
   },
 });
