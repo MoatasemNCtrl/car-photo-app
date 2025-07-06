@@ -10,6 +10,7 @@ export default function App() {
   const [images, setImages] = useState([]);
   const [carDetails, setCarDetails] = useState([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [activeTab, setActiveTab] = useState('home');
 
   const pickImage = async () => {
     // Request permission
@@ -27,7 +28,80 @@ export default function App() {
     });
 
     if (!result.canceled) {
-      setImages([...images, ...result.assets]);
+      // Validate each selected image
+      setIsAnalyzing(true);
+      const validImages = [];
+      const invalidImages = [];
+      
+      for (const asset of result.assets) {
+        try {
+          console.log('Validating image:', asset.uri);
+          
+          // Check if image contains a vehicle
+          const validation = await validateCarImage(asset.uri);
+          
+          if (!validation.contains_vehicle) {
+            invalidImages.push({
+              uri: asset.uri,
+              reason: `Not a vehicle: ${validation.reason}`
+            });
+            continue;
+          }
+          
+          // If we have existing photos, check consistency
+          if (images.length > 0 || validImages.length > 0) {
+            const consistency = await checkCarConsistency(asset.uri);
+            
+            if (!consistency.matches_expected && consistency.confidence !== "low") {
+              invalidImages.push({
+                uri: asset.uri,
+                reason: `Different vehicle: ${consistency.reason}`
+              });
+              continue;
+            }
+          }
+          
+          validImages.push(asset);
+          
+        } catch (error) {
+          console.error('Error validating image:', error);
+          // On validation error, allow the image
+          validImages.push(asset);
+        }
+      }
+      
+      setIsAnalyzing(false);
+      
+      // Show results to user
+      if (invalidImages.length > 0 && validImages.length === 0) {
+        Alert.alert(
+          'Invalid Images',
+          `None of the selected images contain vehicles or match your existing car photos. Please select images that show cars, trucks, or other motor vehicles.`,
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
+      if (invalidImages.length > 0) {
+        Alert.alert(
+          'Some Images Rejected',
+          `${invalidImages.length} image(s) were rejected:\n${invalidImages.map(img => `• ${img.reason}`).join('\n')}\n\n${validImages.length} valid image(s) will be added.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Add Valid Images', onPress: () => setImages([...images, ...validImages]) }
+          ]
+        );
+      } else {
+        // All images are valid
+        setImages([...images, ...validImages]);
+        if (validImages.length > 0) {
+          Alert.alert(
+            'Images Added',
+            `Successfully added ${validImages.length} vehicle image(s).`,
+            [{ text: 'OK' }]
+          );
+        }
+      }
     }
   };
 
@@ -46,7 +120,194 @@ export default function App() {
     });
 
     if (!result.canceled) {
-      setImages([...images, ...result.assets]);
+      // Validate the captured photo
+      setIsAnalyzing(true);
+      
+      try {
+        const asset = result.assets[0];
+        console.log('Validating captured photo:', asset.uri);
+        
+        // Check if image contains a vehicle
+        const validation = await validateCarImage(asset.uri);
+        
+        if (!validation.contains_vehicle) {
+          setIsAnalyzing(false);
+          Alert.alert(
+            'Not a Vehicle',
+            `The captured image doesn't appear to contain a vehicle. ${validation.reason}\n\nPlease take a photo of a car, truck, or other motor vehicle.`,
+            [{ text: 'OK' }]
+          );
+          return;
+        }
+        
+        // If we have existing photos, check consistency
+        if (images.length > 0) {
+          const consistency = await checkCarConsistency(asset.uri);
+          
+          if (!consistency.matches_expected && consistency.confidence !== "low") {
+            setIsAnalyzing(false);
+            Alert.alert(
+              'Different Vehicle Detected',
+              `This appears to be a different vehicle than your existing photos. ${consistency.reason}\n\nWould you like to start a new session with this vehicle?`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { 
+                  text: 'Start New Session', 
+                  onPress: () => {
+                    setImages([asset]);
+                    setCarDetails([]);
+                  }
+                }
+              ]
+            );
+            return;
+          }
+        }
+        
+        // Photo is valid, add it
+        setImages([...images, asset]);
+        Alert.alert(
+          'Photo Added',
+          'Vehicle photo captured successfully!',
+          [{ text: 'OK' }]
+        );
+        
+      } catch (error) {
+        console.error('Error validating captured photo:', error);
+        // On validation error, allow the photo
+        setImages([...images, result.assets[0]]);
+      } finally {
+        setIsAnalyzing(false);
+      }
+    }
+  };
+
+  // Validate if image contains a car
+  const validateCarImage = async (imageUri) => {
+    try {
+      const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+      // Convert image to base64
+      const response = await fetch(imageUri);
+      const arrayBuffer = await response.arrayBuffer();
+      const base64String = Buffer.from(arrayBuffer).toString('base64');
+
+      // Simple validation prompt
+      const prompt = `Look at this image and determine if it contains a car, truck, motorcycle, or any motor vehicle as the main subject.
+
+Return ONLY a JSON object with this format:
+{
+  "contains_vehicle": true/false,
+  "vehicle_type": "car/truck/motorcycle/suv/van/other" (only if contains_vehicle is true),
+  "confidence": "high/medium/low",
+  "reason": "Brief explanation"
+}
+
+Be strict - only return true if there's clearly a motor vehicle as the main subject.`;
+
+      const imagePart = {
+        inlineData: {
+          data: base64String,
+          mimeType: "image/jpeg"
+        }
+      };
+
+      const result = await model.generateContent([prompt, imagePart]);
+      const analysis = result.response.text();
+      
+      console.log('Vehicle validation response:', analysis);
+      
+      // Clean and parse response
+      let jsonStr = analysis.trim();
+      jsonStr = jsonStr.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+      let startIndex = jsonStr.indexOf('{');
+      let endIndex = jsonStr.lastIndexOf('}');
+      
+      if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+        jsonStr = jsonStr.substring(startIndex, endIndex + 1);
+      }
+      
+      const validation = JSON.parse(jsonStr);
+      return validation;
+    } catch (error) {
+      console.error('Error validating image:', error);
+      // On error, assume it might be a car to avoid blocking users
+      return { 
+        contains_vehicle: true, 
+        vehicle_type: "unknown", 
+        confidence: "low", 
+        reason: "Validation failed, allowing upload" 
+      };
+    }
+  };
+
+  // Check if new photos match existing car
+  const checkCarConsistency = async (newImageUri) => {
+    // If no existing photos or no car details analyzed yet, allow the new photo
+    if (images.length === 0 || carDetails.length === 0) {
+      return { matches_expected: true, confidence: "high", reason: "First photo or no analysis done yet" };
+    }
+    
+    try {
+      const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+      const response = await fetch(newImageUri);
+      const arrayBuffer = await response.arrayBuffer();
+      const base64String = Buffer.from(arrayBuffer).toString('base64');
+
+      // Get existing car details for comparison
+      const existingCar = carDetails[0];
+      const expectedBrand = existingCar.brand || 'Unknown';
+      const expectedModel = existingCar.model || 'Unknown';
+      const expectedColor = existingCar.color || 'Unknown';
+
+      const prompt = `Look at this car image and identify the brand, model, and color.
+
+Expected car details from previous photos:
+- Brand: ${expectedBrand}
+- Model: ${expectedModel} 
+- Color: ${expectedColor}
+
+Return ONLY a JSON object:
+{
+  "brand": "detected brand",
+  "model": "detected model", 
+  "color": "detected color",
+  "matches_expected": true/false,
+  "confidence": "high/medium/low",
+  "reason": "Brief explanation of match/mismatch"
+}`;
+
+      const imagePart = {
+        inlineData: {
+          data: base64String,
+          mimeType: "image/jpeg"
+        }
+      };
+
+      const result = await model.generateContent([prompt, imagePart]);
+      const analysis = result.response.text();
+      
+      console.log('Consistency check response:', analysis);
+      
+      // Parse response
+      let jsonStr = analysis.trim();
+      jsonStr = jsonStr.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+      let startIndex = jsonStr.indexOf('{');
+      let endIndex = jsonStr.lastIndexOf('}');
+      
+      if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+        jsonStr = jsonStr.substring(startIndex, endIndex + 1);
+      }
+      
+      const consistency = JSON.parse(jsonStr);
+      return consistency;
+    } catch (error) {
+      console.error('Error checking consistency:', error);
+      // On error, assume consistency to avoid blocking users
+      return { matches_expected: true, confidence: "low", reason: "Validation failed, allowing upload" };
     }
   };
 
@@ -323,10 +584,9 @@ Look for visible damage like scratches, dents, broken parts, collision damage, o
     }
   };
 
-  return (
-    <View style={styles.container}>
-      <StatusBar style="auto" />
-      
+  // Content for each tab
+  const renderHomeContent = () => (
+    <>
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>🚗 Car Photo App</Text>
@@ -363,13 +623,6 @@ Look for visible damage like scratches, dents, broken parts, collision damage, o
           </TouchableOpacity>
         </View>
       )}
-
-      {/* API Test Button */}
-      <View style={styles.analyzeContainer}>
-        <TouchableOpacity style={styles.testButton} onPress={testAPIConnection}>
-          <Text style={styles.testButtonText}>🧪 Test API Connection</Text>
-        </TouchableOpacity>
-      </View>
 
       {/* Image Count */}
       {images.length > 0 && (
@@ -497,6 +750,176 @@ Look for visible damage like scratches, dents, broken parts, collision damage, o
           </View>
         )}
       </ScrollView>
+    </>
+  );
+
+  const renderDamageContent = () => (
+    <ScrollView style={styles.tabContent}>
+      <View style={styles.tabHeader}>
+        <Text style={styles.tabTitle}>🔧 Damage & Replacements</Text>
+        <Text style={styles.tabSubtitle}>Damage assessment and part replacement guide</Text>
+      </View>
+      
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>📋 Damage Assessment</Text>
+        <Text style={styles.cardText}>• Upload photos to analyze vehicle damage</Text>
+        <Text style={styles.cardText}>• Get severity ratings and repair estimates</Text>
+        <Text style={styles.cardText}>• Identify damaged components</Text>
+      </View>
+
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>🔩 Replacement Parts</Text>
+        <Text style={styles.cardText}>• Find compatible replacement parts</Text>
+        <Text style={styles.cardText}>• Get cost estimates for repairs</Text>
+        <Text style={styles.cardText}>• Connect with local repair shops</Text>
+      </View>
+
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>📊 Recent Assessments</Text>
+        {carDetails.length > 0 ? (
+          carDetails.map((details, index) => (
+            <View key={index} style={styles.assessmentItem}>
+              <Text style={styles.assessmentTitle}>
+                {details.brand} {details.model} ({details.year})
+              </Text>
+              <Text style={[styles.assessmentStatus, details.damage_detected ? styles.damageFound : styles.noDamage]}>
+                {details.damage_detected ? '⚠️ Damage Found' : '✅ Good Condition'}
+              </Text>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.cardText}>No assessments yet. Start by uploading car photos in the Home tab.</Text>
+        )}
+      </View>
+    </ScrollView>
+  );
+
+  const renderModsContent = () => (
+    <ScrollView style={styles.tabContent}>
+      <View style={styles.tabHeader}>
+        <Text style={styles.tabTitle}>⚡ Modifications</Text>
+        <Text style={styles.tabSubtitle}>Car modifications and customization</Text>
+      </View>
+      
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>🏁 Performance Mods</Text>
+        <Text style={styles.cardText}>• Engine tuning and upgrades</Text>
+        <Text style={styles.cardText}>• Exhaust system modifications</Text>
+        <Text style={styles.cardText}>• Suspension and handling improvements</Text>
+      </View>
+
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>🎨 Aesthetic Mods</Text>
+        <Text style={styles.cardText}>• Body kits and spoilers</Text>
+        <Text style={styles.cardText}>• Custom paint and wraps</Text>
+        <Text style={styles.cardText}>• Lighting upgrades</Text>
+      </View>
+
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>🔧 Interior Mods</Text>
+        <Text style={styles.cardText}>• Custom seats and upholstery</Text>
+        <Text style={styles.cardText}>• Audio system upgrades</Text>
+        <Text style={styles.cardText}>• Dashboard and trim modifications</Text>
+      </View>
+
+      <View style={styles.comingSoonCard}>
+        <Text style={styles.comingSoonText}>🚧 Coming Soon</Text>
+        <Text style={styles.cardText}>AI-powered modification recommendations based on your car model</Text>
+      </View>
+    </ScrollView>
+  );
+
+  const renderProfileContent = () => (
+    <ScrollView style={styles.tabContent}>
+      <View style={styles.tabHeader}>
+        <Text style={styles.tabTitle}>👤 Profile & Saved Prompts</Text>
+        <Text style={styles.tabSubtitle}>Manage your profile and custom analysis prompts</Text>
+      </View>
+      
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>📱 Profile Settings</Text>
+        <Text style={styles.cardText}>• Customize analysis preferences</Text>
+        <Text style={styles.cardText}>• Set default image quality</Text>
+        <Text style={styles.cardText}>• Manage notification settings</Text>
+      </View>
+
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>💾 Saved Prompts</Text>
+        <Text style={styles.cardText}>• Create custom analysis prompts</Text>
+        <Text style={styles.cardText}>• Save frequently used queries</Text>
+        <Text style={styles.cardText}>• Share prompts with community</Text>
+      </View>
+
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>📈 Analysis History</Text>
+        <Text style={styles.cardText}>• View past car analyses</Text>
+        <Text style={styles.cardText}>• Export analysis reports</Text>
+        <Text style={styles.cardText}>• Track vehicle condition over time</Text>
+      </View>
+
+      <View style={styles.comingSoonCard}>
+        <Text style={styles.comingSoonText}>🚧 Coming Soon</Text>
+        <Text style={styles.cardText}>Cloud sync and user accounts</Text>
+      </View>
+    </ScrollView>
+  );
+
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'home':
+        return renderHomeContent();
+      case 'damage':
+        return renderDamageContent();
+      case 'mods':
+        return renderModsContent();
+      case 'profile':
+        return renderProfileContent();
+      default:
+        return renderHomeContent();
+    }
+  };  return (
+    <View style={styles.container}>
+      <StatusBar style="auto" />
+      
+      {/* Tab Content */}
+      <View style={styles.mainContent}>
+        {renderTabContent()}
+      </View>
+
+      {/* Bottom Navigation */}
+      <View style={styles.bottomNav}>
+        <TouchableOpacity 
+          style={[styles.navItem, activeTab === 'home' && styles.activeNavItem]} 
+          onPress={() => setActiveTab('home')}
+        >
+          <Text style={[styles.navIcon, activeTab === 'home' && styles.activeNavIcon]}>🏠</Text>
+          <Text style={[styles.navText, activeTab === 'home' && styles.activeNavText]}>Home</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={[styles.navItem, activeTab === 'damage' && styles.activeNavItem]} 
+          onPress={() => setActiveTab('damage')}
+        >
+          <Text style={[styles.navIcon, activeTab === 'damage' && styles.activeNavIcon]}>🔧</Text>
+          <Text style={[styles.navText, activeTab === 'damage' && styles.activeNavText]}>Damage</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={[styles.navItem, activeTab === 'mods' && styles.activeNavItem]} 
+          onPress={() => setActiveTab('mods')}
+        >
+          <Text style={[styles.navIcon, activeTab === 'mods' && styles.activeNavIcon]}>⚡</Text>
+          <Text style={[styles.navText, activeTab === 'mods' && styles.activeNavText]}>Mods</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={[styles.navItem, activeTab === 'profile' && styles.activeNavItem]} 
+          onPress={() => setActiveTab('profile')}
+        >
+          <Text style={[styles.navIcon, activeTab === 'profile' && styles.activeNavIcon]}>👤</Text>
+          <Text style={[styles.navText, activeTab === 'profile' && styles.activeNavText]}>Profile</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -506,6 +929,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f5f5f5',
     paddingTop: 50,
+  },
+  mainContent: {
+    flex: 1,
   },
   header: {
     alignItems: 'center',
@@ -553,18 +979,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
   },
-  testButton: {
-    backgroundColor: '#6C757D',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  testButtonText: {
-    color: 'white',
-    fontSize: 14,
-    fontWeight: '600',
-  },
+
   analyzeButtonDisabled: {
     backgroundColor: '#999',
   },
@@ -797,5 +1212,131 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     color: '#2c3e50',
+  },
+  // Bottom Navigation Styles
+  bottomNav: {
+    flexDirection: 'row',
+    backgroundColor: 'white',
+    paddingVertical: 10,
+    paddingBottom: 25, // Extra padding for safe area
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: -2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  navItem: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  activeNavItem: {
+    backgroundColor: '#f0f8ff',
+    borderRadius: 12,
+    marginHorizontal: 4,
+  },
+  navIcon: {
+    fontSize: 20,
+    marginBottom: 4,
+  },
+  activeNavIcon: {
+    fontSize: 22,
+  },
+  navText: {
+    fontSize: 12,
+    color: '#666',
+    fontWeight: '500',
+  },
+  activeNavText: {
+    color: '#007AFF',
+    fontWeight: '600',
+  },
+  // Tab Content Styles
+  tabContent: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+  },
+  tabHeader: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 30,
+    backgroundColor: 'white',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  tabTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 8,
+  },
+  tabSubtitle: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+  },
+  tabCard: {
+    backgroundColor: 'white',
+    margin: 15,
+    padding: 20,
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 12,
+  },
+  cardText: {
+    fontSize: 14,
+    color: '#666',
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  comingSoonCard: {
+    backgroundColor: '#fff9e6',
+    margin: 15,
+    padding: 20,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#ffd700',
+    borderStyle: 'dashed',
+  },
+  comingSoonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#ff8c00',
+    marginBottom: 8,
+  },
+  assessmentItem: {
+    backgroundColor: '#f8f9fa',
+    padding: 12,
+    borderRadius: 8,
+    marginVertical: 4,
+    borderLeftWidth: 4,
+    borderLeftColor: '#007AFF',
+  },
+  assessmentTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 4,
+  },
+  assessmentStatus: {
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
