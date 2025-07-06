@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator, Modal } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator, Modal, Linking } from 'react-native';
 import { useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -53,12 +53,17 @@ export default function App() {
           if (images.length > 0 || validImages.length > 0) {
             const consistency = await checkCarConsistency(asset.uri);
             
-            if (!consistency.matches_expected && consistency.confidence !== "low") {
+            // More lenient consistency check - only reject if very high confidence mismatch
+            if (!consistency.matches_expected && consistency.confidence === "high") {
               invalidImages.push({
                 uri: asset.uri,
-                reason: `Different vehicle: ${consistency.reason}`
+                reason: `Clearly different vehicle: ${consistency.reason}`
               });
               continue;
+            }
+            // Allow all low/medium confidence or uncertain cases
+            if (!consistency.matches_expected) {
+              console.log(`Allowing potentially different vehicle (${consistency.confidence} confidence): ${consistency.reason}`);
             }
           }
           
@@ -145,13 +150,50 @@ export default function App() {
         if (images.length > 0) {
           const consistency = await checkCarConsistency(asset.uri);
           
-          if (!consistency.matches_expected && consistency.confidence !== "low") {
+          // Only reject if very high confidence that it's a clearly different car
+          if (!consistency.matches_expected && consistency.confidence === "high") {
             setIsValidating(false);
             Alert.alert(
               'Different Vehicle Detected',
-              `This appears to be a different vehicle than your existing photos. ${consistency.reason}\n\nWould you like to start a new session with this vehicle?`,
+              `This appears to be a different vehicle than your existing photos. ${consistency.reason}\n\nNote: This check is very strict - if you believe this is the same car from a different angle, you can still add it.`,
               [
                 { text: 'Cancel', style: 'cancel' },
+                { 
+                  text: 'Start New Session', 
+                  onPress: () => {
+                    setImages([asset]);
+                    setCarDetails([]);
+                  }
+                },
+                { 
+                  text: 'Add Anyway (Same Car)', 
+                  onPress: () => {
+                    setImages([...images, asset]);
+                    Alert.alert(
+                      'Photo Added',
+                      'Vehicle photo added. If this is the same car, analysis will be more accurate with multiple angles.',
+                      [{ text: 'OK' }]
+                    );
+                  }
+                }
+              ]
+            );
+            return;
+          } else if (!consistency.matches_expected && consistency.confidence === "medium") {
+            // For medium confidence, show warning but allow easier addition
+            setIsValidating(false);
+            Alert.alert(
+              'Possible Different Vehicle',
+              `This might be a different vehicle, but could also be the same car from a different angle. ${consistency.reason}\n\nWhat would you like to do?`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { 
+                  text: 'Add Photo', 
+                  onPress: () => {
+                    setImages([...images, asset]);
+                    Alert.alert('Photo Added', 'Vehicle photo captured successfully!', [{ text: 'OK' }]);
+                  }
+                },
                 { 
                   text: 'Start New Session', 
                   onPress: () => {
@@ -264,21 +306,39 @@ Be strict - only return true if there's clearly a motor vehicle as the main subj
       const expectedModel = existingCar.model || 'Unknown';
       const expectedColor = existingCar.color || 'Unknown';
 
-      const prompt = `Look at this car image and identify the brand, model, and color.
+      const prompt = `Look at this car image and identify the vehicle. Compare with the expected vehicle from previous photos.
 
 Expected car details from previous photos:
 - Brand: ${expectedBrand}
 - Model: ${expectedModel} 
 - Color: ${expectedColor}
 
+CRITICAL: Be VERY LENIENT - this is likely the SAME CAR from a different angle. Cars look different from various angles, lighting conditions, and distances.
+
+ASSUME IT'S THE SAME CAR unless you see CLEAR contradictions:
+- Completely different vehicle TYPE (sedan vs truck vs motorcycle)
+- Completely different SIZE category (compact car vs large SUV)
+- Dramatically different COLOR (red vs blue, not just light vs dark shades)
+- Completely different ERA (classic car vs modern car)
+
+IGNORE these differences (they're normal for same car):
+- Different angles/perspectives
+- Different lighting/shadows
+- Quality differences
+- Minor color variations
+- Unclear brand/model visibility
+- Different parts of the car visible
+
+If you can't clearly identify details due to angle/lighting, assume it matches.
+
 Return ONLY a JSON object:
 {
-  "brand": "detected brand",
-  "model": "detected model", 
+  "brand": "detected brand (or 'Unknown' if unclear)",
+  "model": "detected model (or 'Unknown' if unclear)", 
   "color": "detected color",
   "matches_expected": true/false,
   "confidence": "high/medium/low",
-  "reason": "Brief explanation of match/mismatch"
+  "reason": "Brief explanation - focus on why it's likely the same car"
 }`;
 
       const imagePart = {
@@ -304,6 +364,58 @@ Return ONLY a JSON object:
       }
       
       const consistency = JSON.parse(jsonStr);
+      
+      // Additional intelligence: be very generous with matches
+      if (!consistency.matches_expected) {
+        const detectedBrand = consistency.brand?.toLowerCase() || '';
+        const detectedModel = consistency.model?.toLowerCase() || '';
+        const detectedColor = consistency.color?.toLowerCase() || '';
+        const expectedBrandLower = expectedBrand.toLowerCase();
+        const expectedModelLower = expectedModel.toLowerCase();
+        const expectedColorLower = expectedColor.toLowerCase();
+        
+        // Check for any similarities or unknowns - be very liberal
+        const brandMatch = (
+          detectedBrand.includes(expectedBrandLower) || 
+          expectedBrandLower.includes(detectedBrand) ||
+          detectedBrand === 'similar' ||
+          detectedBrand === 'unknown' ||
+          expectedBrandLower === 'unknown' ||
+          detectedBrand === '' ||
+          expectedBrandLower === ''
+        );
+        
+        const modelMatch = (
+          detectedModel.includes(expectedModelLower) ||
+          expectedModelLower.includes(detectedModel) ||
+          detectedModel === 'similar' ||
+          detectedModel === 'unknown' ||
+          expectedModelLower === 'unknown' ||
+          detectedModel === '' ||
+          expectedModelLower === ''
+        );
+        
+        const colorMatch = (
+          detectedColor.includes(expectedColorLower) ||
+          expectedColorLower.includes(detectedColor) ||
+          detectedColor === 'similar' ||
+          detectedColor === 'unknown' ||
+          expectedColorLower === 'unknown' ||
+          // Allow similar colors
+          (detectedColor.includes('white') && expectedColorLower.includes('silver')) ||
+          (detectedColor.includes('silver') && expectedColorLower.includes('white')) ||
+          (detectedColor.includes('gray') && expectedColorLower.includes('grey')) ||
+          (detectedColor.includes('grey') && expectedColorLower.includes('gray'))
+        );
+        
+        // If any major characteristic matches, or if confidence is not high, allow it
+        if (brandMatch || modelMatch || colorMatch || consistency.confidence !== "high") {
+          consistency.matches_expected = true;
+          consistency.confidence = "medium";
+          consistency.reason = "Likely same vehicle from different angle/lighting";
+        }
+      }
+      
       return consistency;
     } catch (error) {
       console.error('Error checking consistency:', error);
@@ -571,6 +683,41 @@ For luxury/exotic cars, provide realistic high-end valuations. For damaged vehic
     }
   };
 
+  // Helper function to generate replacement part URLs
+  const getReplacementPartUrl = (carDetails, damageType) => {
+    const brand = carDetails.brand || 'car';
+    const model = carDetails.model || 'part';
+    const year = carDetails.year || '';
+    
+    // Clean damage type for search
+    const cleanDamageType = damageType.toLowerCase().replace(/_/g, ' ');
+    
+    // Create search query for parts
+    const searchQuery = `${brand} ${model} ${year} ${cleanDamageType} replacement part`.replace(/\s+/g, '+');
+    
+    // You can customize these URLs to different parts suppliers
+    const suppliers = {
+      autoZone: `https://www.autozone.com/search?searchText=${searchQuery}`,
+      rockauto: `https://www.rockauto.com/en/catalog/${brand},${year},${model}`,
+      advanceAuto: `https://shop.advanceautoparts.com/find/vehicle-results/?searchText=${searchQuery}`,
+      partsGeek: `https://www.partsgeek.com/catalog/${year}/${brand}/${model}/`,
+      amazon: `https://www.amazon.com/s?k=${searchQuery}&i=automotive`
+    };
+    
+    return suppliers;
+  };
+
+  // Helper function to get unique damage types from all car details
+  const getUniqueDamageTypes = () => {
+    const allDamageTypes = new Set();
+    carDetails.forEach(details => {
+      if (details.damage_types && Array.isArray(details.damage_types)) {
+        details.damage_types.forEach(type => allDamageTypes.add(type));
+      }
+    });
+    return Array.from(allDamageTypes);
+  };
+
   // Helper function to get severity styling
   const getSeverityStyle = (severity) => {
     switch (severity?.toLowerCase()) {
@@ -749,22 +896,7 @@ For luxury/exotic cars, provide realistic high-end valuations. For damaged vehic
       </View>
       
       <View style={styles.tabCard}>
-        <Text style={styles.cardTitle}>📋 Comprehensive Damage Analysis</Text>
-        <Text style={styles.cardText}>• Detailed damage assessment with severity ratings</Text>
-        <Text style={styles.cardText}>• Professional repair cost estimates</Text>
-        <Text style={styles.cardText}>• Impact on vehicle value and resale potential</Text>
-        <Text style={styles.cardText}>• Component-level damage identification</Text>
-      </View>
-
-      <View style={styles.tabCard}>
-        <Text style={styles.cardTitle}>🔩 Replacement Parts</Text>
-        <Text style={styles.cardText}>• Find compatible replacement parts</Text>
-        <Text style={styles.cardText}>• Get cost estimates for repairs</Text>
-        <Text style={styles.cardText}>• Connect with local repair shops</Text>
-      </View>
-
-      <View style={styles.tabCard}>
-        <Text style={styles.cardTitle}>📊 Detailed Damage Reports</Text>
+        <Text style={styles.cardTitle}> Detailed Damage Reports</Text>
         {carDetails.length > 0 ? (
           carDetails.map((details, index) => (
             <View key={index} style={styles.damageReportCard}>
@@ -848,6 +980,94 @@ For luxury/exotic cars, provide realistic high-end valuations. For damaged vehic
           ))
         ) : (
           <Text style={styles.cardText}>No damage reports available. Upload and analyze car photos in the Home tab first.</Text>
+        )}
+      </View>
+
+      {/* Dynamic Replacement Parts Section */}
+      <View style={styles.tabCard}>
+        <Text style={styles.cardTitle}>🔩 Replacement Parts</Text>
+        {carDetails.length > 0 && getUniqueDamageTypes().length > 0 ? (
+          <>
+            <Text style={styles.cardText}>Based on detected damage, here are links to find replacement parts:</Text>
+            {getUniqueDamageTypes().map((damageType, index) => {
+              const carDetail = carDetails.find(detail => detail.damage_types && detail.damage_types.includes(damageType)) || carDetails[0];
+              const partUrls = getReplacementPartUrl(carDetail, damageType);
+              
+              return (
+                <View key={index} style={styles.damagePartSection}>
+                  <Text style={styles.damagePartTitle}>
+                    🔧 {damageType.replace(/_/g, ' ').toUpperCase()} Parts
+                  </Text>
+                  <Text style={styles.damagePartVehicle}>
+                    For: {carDetail.brand} {carDetail.model} {carDetail.year}
+                  </Text>
+                  
+                  <View style={styles.partLinksContainer}>
+                    <TouchableOpacity 
+                      style={styles.partLink}
+                      onPress={() => {
+                        Alert.alert(
+                          'Open Parts Search',
+                          `Search for ${damageType.replace(/_/g, ' ')} parts on AutoZone?`,
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Open', onPress: () => Linking.openURL(partUrls.autoZone) }
+                          ]
+                        );
+                      }}
+                    >
+                      <Text style={styles.partLinkText}>🚗 AutoZone</Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity 
+                      style={styles.partLink}
+                      onPress={() => {
+                        Alert.alert(
+                          'Open Parts Search',
+                          `Search for ${damageType.replace(/_/g, ' ')} parts on RockAuto?`,
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Open', onPress: () => Linking.openURL(partUrls.rockauto) }
+                          ]
+                        );
+                      }}
+                    >
+                      <Text style={styles.partLinkText}>🔧 RockAuto</Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity 
+                      style={styles.partLink}
+                      onPress={() => {
+                        Alert.alert(
+                          'Open Parts Search',
+                          `Search for ${damageType.replace(/_/g, ' ')} parts on Amazon?`,
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Open', onPress: () => Linking.openURL(partUrls.amazon) }
+                          ]
+                        );
+                      }}
+                    >
+                      <Text style={styles.partLinkText}>📦 Amazon</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            })}
+            
+            <Text style={styles.partDisclaimer}>
+              💡 Tip: Always verify part compatibility before purchasing. Consider consulting a mechanic for complex repairs.
+            </Text>
+          </>
+        ) : (
+          <Text style={styles.cardText}>• Find compatible replacement parts</Text>
+        )}
+        {carDetails.length === 0 && (
+          <>
+            <Text style={styles.cardText}>• Get cost estimates for repairs</Text>
+            <Text style={styles.cardText}>• Connect with local repair shops</Text>
+            <Text style={styles.cardText}>• Analyze car photos first to see specific part recommendations</Text>
+          </>
         )}
       </View>
     </ScrollView>
@@ -1368,6 +1588,54 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#856404',
     marginBottom: 4,
+  },
+  // Replacement Parts Styles
+  damagePartSection: {
+    backgroundColor: '#f0f8ff',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#007AFF',
+  },
+  damagePartTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#1a365d',
+    marginBottom: 4,
+  },
+  damagePartVehicle: {
+    fontSize: 12,
+    color: '#4a5568',
+    marginBottom: 8,
+    fontStyle: 'italic',
+  },
+  partLinksContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  partLink: {
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  partLinkText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  partDisclaimer: {
+    fontSize: 11,
+    color: '#718096',
+    fontStyle: 'italic',
+    marginTop: 12,
+    padding: 8,
+    backgroundColor: '#f7fafc',
+    borderRadius: 6,
   },
   // Bottom Navigation Styles
   bottomNav: {
