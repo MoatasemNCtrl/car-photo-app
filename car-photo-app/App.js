@@ -75,15 +75,32 @@ export default function App() {
       
       // Initialize Gemini AI
       const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
       // Convert image to base64
       const response = await fetch(imageUri);
       const arrayBuffer = await response.arrayBuffer();
       const base64String = Buffer.from(arrayBuffer).toString('base64');
 
-      // Prepare the prompt
-      const prompt = `Analyze this car image and provide detailed information in valid JSON format only. Return a JSON object with these exact fields: brand, model, year, body_type, color, confidence_level (high/medium/low), and additional_features. If it's an interior shot, include interior-specific details in additional_features. Be as specific as possible with make, model, and year. Example format: {"brand": "Toyota", "model": "Camry", "year": "2018-2020", "body_type": "Sedan", "color": "Silver", "confidence_level": "high", "additional_features": "Leather interior, sunroof visible"}`;
+      // Simplified and more reliable prompt for car analysis + damage detection
+      const prompt = `Analyze this car image and return ONLY a valid JSON object with car details and damage assessment.
+
+Required JSON format:
+{
+  "brand": "Car brand (e.g., Toyota, BMW, Ford)",
+  "model": "Model name (e.g., Camry, 911, F-150)",
+  "year": "Year or range (e.g., 2020, 2018-2020)",
+  "body_type": "Vehicle type (e.g., Sedan, SUV, Sports Car)",
+  "color": "Primary color (e.g., Red, Blue, Silver)",
+  "confidence_level": "high, medium, or low",
+  "damage_detected": true or false,
+  "damage_types": ["list of damage types if any"],
+  "damage_severity": "none, minor, moderate, or severe",
+  "damage_description": "Brief description of any damage",
+  "condition_assessment": "Overall condition summary"
+}
+
+Look for visible damage like scratches, dents, broken parts, collision damage, or rust. Return ONLY the JSON object, no other text.`;
 
       // Create image part for Gemini
       const imagePart = {
@@ -100,26 +117,48 @@ export default function App() {
       console.log('Gemini response:', analysis);
       
       try {
-        // Clean the response to extract JSON (Gemini sometimes includes extra text)
-        let jsonMatch = analysis.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const carInfo = JSON.parse(jsonMatch[0]);
-          return carInfo;
-        } else {
-          // If no JSON found, try parsing the whole response
-          const carInfo = JSON.parse(analysis);
-          return carInfo;
+        // Clean the response to extract JSON - be more aggressive
+        let jsonStr = analysis.trim();
+        
+        // Remove markdown code blocks if present
+        jsonStr = jsonStr.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+        
+        // Find JSON object boundaries
+        let startIndex = jsonStr.indexOf('{');
+        let endIndex = jsonStr.lastIndexOf('}');
+        
+        if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+          jsonStr = jsonStr.substring(startIndex, endIndex + 1);
         }
+        
+        console.log('Cleaned JSON string:', jsonStr);
+        
+        const carInfo = JSON.parse(jsonStr);
+        
+        // Validate that we have the minimum required fields
+        if (!carInfo.brand && !carInfo.model) {
+          throw new Error('Missing essential car information');
+        }
+        
+        return carInfo;
       } catch (parseError) {
-        console.log('Failed to parse as JSON, returning as text analysis');
-        // If not JSON, return a structured object with the text analysis
-        return { 
+        console.log('JSON parsing failed:', parseError.message);
+        console.log('Attempting fallback parsing...');
+        
+        // Fallback: create a structured response from the text
+        return {
           brand: "Analysis Complete",
-          model: "Check details below",
-          year: "See full analysis",
-          body_type: "Text format", 
-          color: "N/A",
-          analysis: analysis 
+          model: "See details below", 
+          year: "Text format",
+          body_type: "Analysis provided",
+          color: "Check description",
+          confidence_level: "medium",
+          damage_detected: analysis.toLowerCase().includes('damage') || analysis.toLowerCase().includes('crash'),
+          damage_types: [],
+          damage_severity: "unknown",
+          damage_description: "Full analysis in text format",
+          condition_assessment: "See analysis below",
+          analysis: analysis.substring(0, 500) + (analysis.length > 500 ? '...' : '') // Truncate long responses
         };
       }
     } catch (error) {
@@ -236,7 +275,7 @@ export default function App() {
 
       // Simple text-only API test with Gemini
       const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
       const result = await model.generateContent("Just respond with 'Gemini API working' if you receive this message.");
       const response = result.response.text();
@@ -262,6 +301,25 @@ export default function App() {
       console.error('Error analyzing single image:', error);
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  // Helper function to get severity styling
+  const getSeverityStyle = (severity) => {
+    switch (severity?.toLowerCase()) {
+      case 'total_loss':
+      case 'totaled':
+        return { color: '#8b0000', fontWeight: 'bold', backgroundColor: '#ffebee', padding: 4, borderRadius: 4 };
+      case 'severe':
+        return { color: '#e74c3c', fontWeight: 'bold' };
+      case 'moderate':
+        return { color: '#f39c12', fontWeight: 'bold' };
+      case 'minor':
+        return { color: '#f1c40f', fontWeight: 'bold' };
+      case 'none':
+        return { color: '#27ae60', fontWeight: 'bold' };
+      default:
+        return { color: '#27ae60', fontWeight: 'bold' };
     }
   };
 
@@ -358,39 +416,87 @@ export default function App() {
             <Text style={styles.emptySubtext}>Take a photo or choose from your gallery to get started</Text>
           </View>
         )}
-      </ScrollView>
 
-      {/* Detailed Car Analysis */}
-      {carDetails.length > 0 && (
-        <View style={styles.detailsSection}>
-          <Text style={styles.detailsTitle}>🚗 Car Analysis Results</Text>
-          <ScrollView style={styles.detailsScroll} horizontal showsHorizontalScrollIndicator={false}>
+        {/* Detailed Car Analysis - moved inside the main ScrollView */}
+        {carDetails.length > 0 && (
+          <View style={styles.detailsSection}>
+            <Text style={styles.detailsTitle}>🚗 Car Analysis Results</Text>
             {carDetails.map((details, index) => (
               <View key={index} style={styles.detailCard}>
-                <Text style={styles.detailCardTitle}>Photo {index + 1}</Text>
-                <Text style={styles.detailItem}>Brand: {details.brand || 'Unknown'}</Text>
-                <Text style={styles.detailItem}>Model: {details.model || 'Unknown'}</Text>
-                <Text style={styles.detailItem}>Year: {details.year || 'Unknown'}</Text>
-                <Text style={styles.detailItem}>Type: {details.body_type || 'Unknown'}</Text>
-                <Text style={styles.detailItem}>Color: {details.color || 'Unknown'}</Text>
-                {details.confidence_level && (
-                  <Text style={[styles.detailItem, styles.confidenceText]}>
-                    Confidence: {details.confidence_level}
-                  </Text>
-                )}
-                {details.additional_features && (
-                  <Text style={styles.detailFeatures}>
-                    Features: {details.additional_features}
-                  </Text>
-                )}
-                {details.note && (
-                  <Text style={styles.detailNote}>{details.note}</Text>
-                )}
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-      )}
+                <Text style={styles.detailCardTitle}>📸 Photo {index + 1} Analysis</Text>
+                
+                {/* Car Information */}
+                <View style={styles.carInfoSection}>
+                  <Text style={styles.sectionTitle}>🚗 Vehicle Information</Text>
+                  <Text style={styles.detailItem}>Brand: {details.brand || 'Unknown'}</Text>
+                  <Text style={styles.detailItem}>Model: {details.model || 'Unknown'}</Text>
+                  <Text style={styles.detailItem}>Year: {details.year || 'Unknown'}</Text>
+                  <Text style={styles.detailItem}>Type: {details.body_type || 'Unknown'}</Text>
+                  <Text style={styles.detailItem}>Color: {details.color || 'Unknown'}</Text>
+                </View>
+                  
+                  {/* Damage Assessment */}
+                  {details.damage_detected !== undefined && (
+                    <View style={styles.damageSection}>
+                      <Text style={styles.damageTitle}>🔍 Damage Assessment</Text>
+                      <Text style={[styles.damageStatus, details.damage_detected ? styles.damageFound : styles.noDamage]}>
+                        {details.damage_detected ? '⚠️ Damage Detected' : '✅ No Damage Found'}
+                      </Text>
+                      
+                      {details.damage_severity && (
+                        <Text style={[styles.damageSeverity, getSeverityStyle(details.damage_severity)]}>
+                          Severity: {details.damage_severity.toUpperCase()}
+                        </Text>
+                      )}
+                      
+                      {details.estimated_repair_cost && (
+                        <Text style={styles.repairCost}>
+                          Estimated Repair Cost: {details.estimated_repair_cost.toUpperCase()}
+                        </Text>
+                      )}
+                      
+                      {details.damage_types && details.damage_types.length > 0 && (
+                        <View style={styles.damageTypes}>
+                          <Text style={styles.damageTypesTitle}>Damage Types:</Text>
+                          {details.damage_types.map((type, idx) => (
+                            <Text key={idx} style={styles.damageType}>• {type.replace(/_/g, ' ')}</Text>
+                          ))}
+                        </View>
+                      )}
+                      
+                      {details.damage_description && (
+                        <Text style={styles.damageDescription}>
+                          Description: {details.damage_description}
+                        </Text>
+                      )}
+                      
+                      {details.condition_assessment && (
+                        <Text style={styles.conditionAssessment}>
+                          Overall Condition: {details.condition_assessment}
+                        </Text>
+                      )}
+                    </View>
+                  )}
+                  
+                  {/* Confidence and Features */}
+                  {details.confidence_level && (
+                    <Text style={[styles.detailItem, styles.confidenceText]}>
+                      Confidence: {details.confidence_level}
+                    </Text>
+                  )}
+                  {details.additional_features && (
+                    <Text style={styles.detailFeatures}>
+                      Features: {details.additional_features}
+                    </Text>
+                  )}
+                  {details.note && (
+                    <Text style={styles.detailNote}>{details.note}</Text>
+                  )}
+                </View>
+              ))}
+          </View>
+        )}
+      </ScrollView>
     </View>
   );
 }
@@ -487,6 +593,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     paddingHorizontal: 15,
     justifyContent: 'space-between',
+    paddingBottom: 20, // Add padding at bottom for better spacing
   },
   imageContainer: {
     width: '48%',
@@ -575,7 +682,8 @@ const styles = StyleSheet.create({
     padding: 20,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: 200,
+    marginTop: 20,
+    width: '100%',
   },
   detailsTitle: {
     fontSize: 18,
@@ -583,21 +691,28 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     color: '#333',
   },
-  detailsScroll: {
-    flexGrow: 0,
-  },
   detailCard: {
     backgroundColor: '#f8f9fa',
     padding: 15,
     borderRadius: 10,
-    marginRight: 15,
-    minWidth: 200,
+    marginBottom: 15,
+    width: '100%',
   },
   detailCardTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 12,
+    color: '#007AFF',
+    textAlign: 'center',
+  },
+  carInfoSection: {
+    marginBottom: 15,
+  },
+  sectionTitle: {
     fontSize: 14,
     fontWeight: 'bold',
     marginBottom: 8,
-    color: '#007AFF',
+    color: '#2c3e50',
   },
   detailItem: {
     fontSize: 12,
@@ -620,5 +735,67 @@ const styles = StyleSheet.create({
     color: '#dc3545',
     marginTop: 8,
     fontWeight: '500',
+  },
+  // Damage Assessment Styles
+  damageSection: {
+    marginTop: 12,
+    padding: 10,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#ff6b6b',
+  },
+  damageTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    color: '#2c3e50',
+  },
+  damageStatus: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    marginBottom: 6,
+  },
+  damageFound: {
+    color: '#e74c3c',
+  },
+  noDamage: {
+    color: '#27ae60',
+  },
+  damageSeverity: {
+    fontSize: 12,
+    marginBottom: 6,
+  },
+  repairCost: {
+    fontSize: 12,
+    marginBottom: 6,
+    fontWeight: 'bold',
+    color: '#8e44ad',
+  },
+  damageTypes: {
+    marginBottom: 8,
+  },
+  damageTypesTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 4,
+    color: '#34495e',
+  },
+  damageType: {
+    fontSize: 11,
+    marginLeft: 8,
+    marginBottom: 2,
+    color: '#7f8c8d',
+  },
+  damageDescription: {
+    fontSize: 11,
+    marginBottom: 6,
+    color: '#5d6d7e',
+    fontStyle: 'italic',
+  },
+  conditionAssessment: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#2c3e50',
   },
 });
