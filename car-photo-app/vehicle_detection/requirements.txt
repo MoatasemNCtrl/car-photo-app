@@ -1,0 +1,31 @@
+# Vehicle Damage Detection Requirements
+# Core ML frameworks
+ultralytics>=8.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Computer vision
+opencv-python>=4.8.0
+pillow>=9.0.0
+numpy>=1.21.0
+
+# Data processing
+pandas>=1.5.0
+pyyaml>=6.0
+
+# Dataset download
+kaggle>=1.5.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# API and deployment (optional)
+fastapi>=0.100.0
+uvicorn>=0.20.0
+python-multipart>=0.0.6
+
+# Mobile export (optional)
+tensorflow>=2.12.0  # For TensorFlow Lite export
+coremltools>=6.0    # For Core ML export (iOS)
+onnx>=1.14.0        # For ONNX export
