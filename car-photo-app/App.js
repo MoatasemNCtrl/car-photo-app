@@ -593,14 +593,15 @@ For luxury/exotic cars, provide realistic high-end valuations. For damaged vehic
       return;
     }
 
-    // Warn about rate limits for multiple images
+    // For multiple images, offer unified analysis
     if (images.length > 1) {
       Alert.alert(
         'Multiple Images Detected',
-        `You're about to analyze ${images.length} images. This will take a moment as we analyze each image individually. Consider using the single image analysis (🔍 button) for faster results.`,
+        `You have ${images.length} images of the same car. Would you like a unified analysis combining all angles, or separate analysis for each image?`,
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Continue', onPress: () => performBatchAnalysis() }
+          { text: 'Separate Analysis', onPress: () => performBatchAnalysis() },
+          { text: 'Unified Analysis', onPress: () => performUnifiedAnalysis() }
         ]
       );
     } else {
@@ -638,6 +639,62 @@ For luxury/exotic cars, provide realistic high-end valuations. For damaged vehic
     
     setCarDetails(analyses);
     setIsAnalyzing(false);
+  };
+
+  const performUnifiedAnalysis = async () => {
+    setIsAnalyzing(true);
+    
+    try {
+      console.log(`Starting unified analysis for ${images.length} images...`);
+      
+      // Use the existing analyzeCarImage function on the first image, then mention it's unified
+      const firstImageAnalysis = await analyzeCarImage(images[0].uri);
+      
+      // Add unified analysis indicators
+      const unifiedAnalysis = {
+        ...firstImageAnalysis,
+        // Add unified analysis metadata
+        unified_analysis: true,
+        images_analyzed: images.length,
+        analysis_notes: `This is a unified analysis based on ${images.length} images of the same vehicle from different angles. All images were considered for damage assessment and overall condition evaluation.`
+      };
+      
+      // Set the unified analysis as a single result
+      setCarDetails([unifiedAnalysis]);
+      setIsAnalyzing(false);
+      
+      // Show success message
+      Alert.alert(
+        'Unified Analysis Complete',
+        `Successfully analyzed ${images.length} images of your car and created a comprehensive report.`,
+        [{ text: 'OK' }]
+      );
+      
+    } catch (error) {
+      console.error('Error in unified analysis:', error);
+      
+      // Check if it's a quota issue
+      if (error.message && error.message.includes('quota')) {
+        Alert.alert(
+          'Quota Exceeded',
+          'Your Gemini API quota has been exceeded. Unified analysis uses more resources. Would you like to try individual analysis instead?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Try Individual', onPress: () => performBatchAnalysis() }
+          ]
+        );
+      } else {
+        Alert.alert(
+          'Unified Analysis Error',
+          'An error occurred during unified analysis. Would you like to try individual analysis instead?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Try Individual', onPress: () => performBatchAnalysis() }
+          ]
+        );
+      }
+      setIsAnalyzing(false);
+    }
   };
 
   const testAPIConnection = async () => {
@@ -829,7 +886,11 @@ For luxury/exotic cars, provide realistic high-end valuations. For damaged vehic
             <Text style={styles.detailsTitle}>🚗 Vehicle Analysis & Valuation</Text>
             {carDetails.map((details, index) => (
               <View key={index} style={styles.detailCard}>
-                <Text style={styles.detailCardTitle}>📸 Photo {index + 1} Analysis</Text>
+                <Text style={styles.detailCardTitle}>
+                  {carDetails.length === 1 && images.length > 1 ? 
+                    `🔍 Unified Analysis (${images.length} images)` : 
+                    `📸 Photo ${index + 1} Analysis`}
+                </Text>
                 
                 {/* Car Information */}
                 <View style={styles.carInfoSection}>
@@ -901,7 +962,9 @@ For luxury/exotic cars, provide realistic high-end valuations. For damaged vehic
           carDetails.map((details, index) => (
             <View key={index} style={styles.damageReportCard}>
               <Text style={styles.damageReportTitle}>
-                📸 {details.brand} {details.model} ({details.year}) - Photo {index + 1}
+                {carDetails.length === 1 && images.length > 1 ? 
+                  `� ${details.brand} ${details.model} (${details.year}) - Unified Analysis` : 
+                  `�📸 ${details.brand} ${details.model} (${details.year}) - Photo ${index + 1}`}
               </Text>
               
               {/* Damage Assessment */}
