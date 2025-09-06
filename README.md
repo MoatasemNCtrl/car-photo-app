@@ -14,7 +14,7 @@ A comprehensive React Native application for car photo capture, analysis, and da
 ### 🤖 **AI Analysis Capabilities**
 - **Car Identification**: Brand, model, year detection
 - **Visual Features**: Body type, color analysis
-- **Damage Detection**: Custom YOLOv8 model for vehicle damage assessment
+
 - **Confidence Scoring**: Reliability indicators for all detections
 
 ### 🔧 **Damage Detection System**
