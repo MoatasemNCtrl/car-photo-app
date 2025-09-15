@@ -18,7 +18,6 @@ A comprehensive React Native application for car photo capture, analysis, and da
 - **Confidence Scoring**: Reliability indicators for all detections
 
 ### 🔧 **Damage Detection System**
-- **Custom YOLO Model**: Trained on VehiDE dataset
 - **10+ Damage Types**: Scratches, dents, cracks, glass damage, etc.
 - **Severity Assessment**: Automatic damage severity classification
 - **Visual Annotation**: Highlighted damage areas on images
@@ -33,14 +32,6 @@ npm install
 npx expo start
 ```
 
-### Damage Detection (Optional)
-```bash
-cd car-photo-app/vehicle_detection
-./setup.sh
-python download_dataset.py
-python convert_to_yolo.py
-python train_model.py
-```
 
 ## 📁 Project Structure
 
@@ -53,9 +44,6 @@ car-photo-app/
 │   ├── README.md         # Damage detection docs
 │   ├── setup.sh          # Setup script
 │   ├── requirements.txt  # Python dependencies
-│   ├── download_dataset.py
-│   ├── convert_to_yolo.py
-│   ├── train_model.py
 │   ├── inference.py
 │   ├── api_server.py     # FastAPI server
 │   └── react_native_integration.js
@@ -100,11 +88,8 @@ chmod +x setup.sh
 - **Expo** - Development platform and tools
 - **Expo Image Picker** - Camera and gallery access
 
-### AI & Machine Learning  
+### AI 
 - **Google Gemini 2.5** - General car analysis
-- **YOLOv8** - Custom damage detection
-- **Ultralytics** - YOLO training and inference
-- **OpenCV** - Image processing
 
 ### Backend (Optional)
 - **FastAPI** - REST API server
@@ -117,11 +102,6 @@ chmod +x setup.sh
 - ✅ **Generous Free Tier**: 15 requests/min, 1,500/day
 - ✅ **High Accuracy**: Excellent car identification
 - ✅ **Multi-modal**: Handles text + image analysis
-
-### Custom YOLO Damage Detection
-- 🎯 **Specialized**: Trained specifically for vehicle damage
-- 📱 **Mobile Ready**: Exportable to TensorFlow Lite
-- 🔧 **Customizable**: Retrain on your own damage data
 
 ## 🤝 Contributing
 
